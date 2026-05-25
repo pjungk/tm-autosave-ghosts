@@ -9,9 +9,11 @@ declare Text G_PreviousMapUid;
 // settings and stuff from angelscript
 declare Boolean AutosaveActive;
 declare Boolean SetAutosaveActive;
+declare Boolean PbFilterEnabled;
+declare Integer MaxSaveTimeMs;
+declare Boolean FileNameDateAtEnd;
 
 // state
-declare Boolean[Ident] SeenGhosts;
 declare Integer[][][Integer] SeenTimes;
 declare Integer NbLastSeen;
 declare Integer OnlySaveAfter;
@@ -41,7 +43,6 @@ Void CheckMapChange() {
 
 Void ResetGhostsState() {
     NbLastSeen = 0;
-    SeenGhosts.clear();
     SeenTimes.clear();
     OnlySaveAfter = Now + 10000;
     MLHookLog("Reset ghosts state.");
@@ -63,6 +64,12 @@ Void CheckIncoming() {
         } else if (Event[0] == "AutosaveActive") {
             AutosaveActive = Event[1] == "True";
             SetAutosaveActive = True;
+        } else if (Event[0] == "PbFilterEnabled") {
+            PbFilterEnabled = Event[1] == "True";
+        } else if (Event[0] == "MaxSaveTimeMs") {
+            MaxSaveTimeMs = TL::ToInteger(Event[1]);
+        } else if (Event[0] == "FileNameDateAtEnd") {
+            FileNameDateAtEnd = Event[1] == "True";
         } else {
             MLHookLog("Skipped unknown incoming event: " ^ Event);
             continue;
@@ -77,15 +84,23 @@ Text GetGhostFileName(CGhost Ghost) {
     declare Integer GTime = Ghost.Result.Time;
     declare Text TheDate = TL::Replace(TL::Replace(System.CurrentLocalDateText, "/", "-"), ":", "-");
     declare Text MapName = TL::StripFormatting(Map.MapInfo.Name);
+    if (FileNameDateAtEnd) {
+        return "AutosavedGhosts\\" ^ MapName ^ "\\" ^ MapName ^ "-" ^ Name ^ "-" ^ GTime ^ "ms-" ^ TheDate ^ ".Replay.gbx";
+    }
     return "AutosavedGhosts\\" ^ MapName ^ "\\" ^ TheDate ^ "-" ^ MapName ^ "-" ^ Name ^ "-" ^ GTime ^ "ms.Replay.gbx";
 }
 
 // will only return true for a ghost the first time it is seen
 Boolean ShouldSaveGhost(CGhost Ghost) {
-    if (SeenGhosts.existskey(Ghost.Id)) return False; // we've seen this ghost
-    SeenGhosts[Ghost.Id] = True; // this should act to help quickly filter this ghost out from consideration again
-    if (Ghost.Nickname != LocalUser.Name) return False; // only save the local user's ghosts; and not 'Personal Best' (b/c they're already saved)
-    if (!SeenTimes.existskey(Ghost.Result.Time)) return True; // we don't have this time
+    if (Ghost.Nickname != LocalUser.Name) {
+        return False; // only save the local user's ghosts; and not 'Personal Best' (b/c they're already saved)
+    }
+    if (PbFilterEnabled && MaxSaveTimeMs > 0 && Ghost.Result.Time > MaxSaveTimeMs) {
+        return False;
+    }
+    if (!SeenTimes.existskey(Ghost.Result.Time)) {
+        return True; // we don't have this time
+    }
     declare Integer[] GhostCPs = ToScriptArray(Ghost.Result.Checkpoints);
     foreach (CpTimes in SeenTimes[Ghost.Result.Time]) { // inside the for loop we'll return if we find a reason to not save this ghost
         if (CpTimes.count != GhostCPs.count) continue; // CPs differ so can't be the same
@@ -96,13 +111,14 @@ Boolean ShouldSaveGhost(CGhost Ghost) {
                 break;
             }
         }
-        if (IsIdentical) return False; // if we find a match, return
+        if (IsIdentical) {
+            return False; // if we find a match, return
+        }
     }
     return True; // if we get here, we haven't seen this ghost before
 }
 
 Void RecordSeen(CGhost Ghost) {
-    SeenGhosts[Ghost.Id] = True;
     if (!SeenTimes.existskey(Ghost.Result.Time)) {
         SeenTimes[Ghost.Result.Time] = [];
     }
@@ -120,9 +136,9 @@ Void OnFirstLoad() {
 
 Void CheckGhostsCPData() {
     declare Integer NbGhosts = DataFileMgr.Ghosts.count;
-    if (NbGhosts == NbLastSeen && (NbGhosts == 0 || SeenGhosts.existskey(DataFileMgr.Ghosts[0].Id))) { return; }
-    MLHookLog("DataFileMgr.Ghosts found " ^ (NbGhosts - NbLastSeen) ^ " new ghosts.");
-    NbLastSeen = NbGhosts;
+    if (NbGhosts != NbLastSeen) {
+        NbLastSeen = NbGhosts;
+    }
     declare CGhost[] GhostsToSave;
     foreach (Ghost in DataFileMgr.Ghosts) {
         if (ShouldSaveGhost(Ghost)) {

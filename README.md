@@ -2,8 +2,9 @@
 
 **This plugin requires _MLHook_ -- you must install that, too.**
 
-This plugin will autosave a playable `.Replay.gbx` file for all ghosts that you generate, even in online servers.
-This includes runs that are not PBs, but the run must be completed (it does not save partial runs).
+This plugin will autosave a playable `.Replay.gbx` file for ghosts that you generate, even in online servers.
+By default it saves every finished run, but you can optionally restrict it to runs that are close to your current PB on the map.
+But the run must be completed (it does not save partial runs).
 To save partial runs (that aren't able to be played against), see [Autosave Replays for MediaTracker](https://openplanet.dev/plugin/autosavereplaysformt).
 
 Works in:

@@ -83,19 +83,25 @@ void CheckForNewGhosts(CGameDataFileManagerScript@ dfm) {
     }
     for (uint i = 0; i < toSave.Length; i++) {
         auto ghost = toSave[i];
+        int saveWindowMs = GetSaveWindowMs();
+        if (!(saveWindowMs < 0 || ghost.Result.Time <= saveWindowMs)) continue;
         auto savePath = GetValidationGhostFileName(ghost);
         dfm.Replay_Save(savePath, GetApp().RootMap, ghost);
         g_numSaved++;
         NotifySaved(savePath);
+        startnew(RefreshPbFilterSoon);
         yield();
     }
 }
 
 const string GetValidationGhostFileName(CGameGhostScript@ ghost) {
-    string name = StripFormatCodes(ghost.Nickname);
+    string name = Text::StripFormatCodes(ghost.Nickname);
     auto time = ghost.Result.Time;
     auto date = GetApp().PlaygroundScript.System.CurrentLocalDateText.Replace("/", "-").Replace(":", "-");
-    auto mapName = StripFormatCodes(GetApp().RootMap.MapInfo.Name);
+    auto mapName = Text::StripFormatCodes(GetApp().RootMap.MapInfo.Name);
+    if (S_FileNameDateAtEnd) {
+        return "AutosavedGhosts\\" + mapName + "-validation\\" + mapName + "-" + name + "-" + time + "ms-" + date + ".Replay.gbx";
+    }
     return "AutosavedGhosts\\" + mapName + "-validation\\" + date + "-" + mapName + "-" + name + "-" + time + "ms.Replay.gbx";
 }
 
@@ -105,6 +111,7 @@ void OnMapChange() {
 
 void UpdateAllMLVariables() {
     UpdateMLAutosaveActive();
+    UpdateMLSaveFilter();
 }
 
 void ToggleAutosaveActive() {
@@ -124,6 +131,56 @@ bool get_AutosaveCurrentlyActive() {
 
 void UpdateMLAutosaveActive() {
     MLHook::Queue_MessageManialinkPlayground(PageUID, {"AutosaveActive", AutosaveCurrentlyActive ? "True" : "False"});
+}
+
+// Gets map UID and TA mode variant for score lookups.
+bool TryGetCurrentMapInfo(string &out mapUid, string &out gameMode) {
+    auto map = GetApp().RootMap;
+    if (map is null || map.MapInfo is null) return false;
+    mapUid = map.MapInfo.MapUid;
+    gameMode = map.MapInfo.TMObjective_NbClones > 0 ? "TimeAttackClone" : "TimeAttack";
+    return mapUid.Length > 0;
+}
+
+// Reads the current map personal best time from the score manager.
+int GetCurrentMapPersonalBest() {
+    string mapUid, gameMode;
+    if (!TryGetCurrentMapInfo(mapUid, gameMode)) return -1;
+    auto network = cast<CTrackManiaNetwork>(GetApp().Network);
+    if (network is null || network.ClientManiaAppPlayground is null) {
+        return -1;
+    }
+    auto scoreMgr = network.ClientManiaAppPlayground.ScoreMgr;
+    if (scoreMgr is null) return -1;
+    return scoreMgr.Map_GetRecord_v2(0x100, mapUid, "PersonalBest", "", gameMode, "");
+}
+
+// Computes the max save time based on PB and selected threshold.
+int GetSaveWindowMs() {
+    if (!S_OnlySaveNearPb) return -1;
+    int pbMs = GetCurrentMapPersonalBest();
+    if (pbMs <= 0) return -1;
+    float nearPbValue = Math::Max(0.0f, S_NearPbValue);
+    if (S_NearPbUnit == PBUnitType::Seconds) {
+        return pbMs + int(nearPbValue * 1000.0f + 0.5f);
+    }
+    return pbMs + int(float(pbMs) * nearPbValue / 100.0f + 0.5f);
+}
+
+
+// Pushes PB filter state and threshold to the injected ML script.
+void UpdateMLSaveFilter() {
+    int saveWindowMs = GetSaveWindowMs();
+    bool filterEnabled = S_OnlySaveNearPb && saveWindowMs >= 0;
+    MLHook::Queue_MessageManialinkPlayground(PageUID, {"PbFilterEnabled", filterEnabled ? "True" : "False"});
+    MLHook::Queue_MessageManialinkPlayground(PageUID, {"MaxSaveTimeMs", tostring(saveWindowMs)});
+    MLHook::Queue_MessageManialinkPlayground(PageUID, {"FileNameDateAtEnd", S_FileNameDateAtEnd ? "True" : "False"});
+}
+
+// Refreshes the PB filter shortly after a save to follow PB updates.
+void RefreshPbFilterSoon() {
+    sleep(1500);
+    UpdateMLSaveFilter();
 }
 
 void ForceSaveAllGhosts() {
@@ -167,6 +224,7 @@ class AutosaveGhostEvents : MLHook::HookMLEventsByType {
         } else {
             NotifySaved(event.data[0]);
         }
+        startnew(RefreshPbFilterSoon);
     }
 
     // void OnSavedGhost(MLHook::PendingEvent@ event) {
@@ -252,7 +310,7 @@ void RenderMenuMain() {
 
 	auto pos = UI::GetCursorPos();
 	if (S_MenuBarFloatOnRight) {
-	    auto textSize = Draw::MeasureString(label);
+        auto textSize = UI::MeasureString(label);
 		UI::SetCursorPos(vec2(UI::GetWindowSize().x - textSize.x - S_MenuBarFloatOffset - UI::GetStyleVarVec2(UI::StyleVar::WindowPadding).x * 1.5, pos.y));
 	}
 
@@ -283,7 +341,7 @@ string get_CurrentMap() {
 string get_MapNameSafe() {
     auto map = GetApp().RootMap;
     if (map is null) return "";
-    return StripFormatCodes(map.MapName);
+    return Text::StripFormatCodes(map.MapName);
 }
 
 string get_CurrentDateText() {
@@ -302,6 +360,25 @@ bool S_AutosaveActive = true;
 
 [Setting category="Autosave Ghosts" name="Autosave Validation Replays?" description="When validating a map, validation replays will be automatically saved."]
 bool S_SaveValidationReplays = true;
+
+
+enum PBUnitType {
+    Percent,
+    Seconds
+}
+
+[Setting category="PB Filter" name="Enable Near-PB Filter" description="Only save runs within the chosen threshold of the personal best"]
+bool S_OnlySaveNearPb = false;
+
+[Setting category="PB Filter" drag min=0 max=100 name="PB Threshold" description="Threshold value in the selected unit (percent or seconds)"]
+float S_NearPbValue = 2.0f;
+
+[Setting category="PB Filter" name="PB Unit" description="Unit used for the threshold"]
+PBUnitType S_NearPbUnit = PBUnitType::Percent;
+
+[Setting category="Autosave Ghosts" name="Put Date At End Of File Name" description="Append the date to autosaved ghost file names instead of prefixing it."]
+bool S_FileNameDateAtEnd = false;
+
 
 [Setting category="Autosave Ghosts" name="MenuBar Quick Toggle Off" description="Show a button in the main menu bar to quickly toggle autosaving off (stop saving replays)."]
 bool S_MenuBarQuickToggleOff = true;
